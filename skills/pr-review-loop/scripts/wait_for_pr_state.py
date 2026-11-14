@@ -324,6 +324,20 @@ def read_checks(repo: str, number: int, head: str) -> list[dict[str, Any]]:
     )
 
 
+def controller_matches_pr(run: dict[str, Any], pr: dict[str, Any]) -> bool:
+    repository, separator, number = str(pr.get("url") or "").rpartition("/pull/")
+    if not separator or not number.isdecimal():
+        return False
+    qualified = "/".join(repository.rstrip("/").split("/")[-2:])
+    return any(
+        association.get("number") == int(number)
+        and str(association.get("url") or "").endswith(f"/repos/{qualified}/pulls/{number}")
+        and (association.get("head") or {}).get("sha") == pr.get("headRefOid")
+        and (association.get("base") or {}).get("sha") == run.get("head_sha")
+        for association in run.get("pull_requests") or []
+    )
+
+
 def is_deferred_status(
     pr: dict[str, Any], check: dict[str, Any], status: dict[str, Any],
     run: dict[str, Any], names: list[str], workflow: str, description: str,
@@ -345,7 +359,7 @@ def is_deferred_status(
         and status.get("description") == description and check.get("link") == target
         and run.get("id") == int(match.group(1))
         and run.get("event") == "pull_request_target"
-        and run.get("head_sha") == pr.get("headRefOid")
+        and (run.get("head_sha") == pr.get("headRefOid") or controller_matches_pr(run, pr))
         and run.get("path") == f".github/workflows/{workflow}"
         and run.get("status") == "completed" and run.get("conclusion") == "success"
     )
@@ -379,7 +393,9 @@ def phase_checks(
                 runs[run_id] = json.loads(gh(["api", f"repos/{repo}/actions/runs/{run_id}"]).stdout)
             run = runs[run_id]
             if is_deferred_status(pr, check, status, run, names, policy["workflow"], policy["description"]):
-                check.update(deferred=True, status_id=status_id(status), controller_attempt=run.get("run_attempt"))
+                check.update(deferred=True, status_id=status_id(status), controller_attempt=run.get("run_attempt"),
+                             controller_head_sha=run.get("head_sha"), controller_path=run.get("path"),
+                             controller_pr_url=pr["url"], controller_pr_head_sha=pr["headRefOid"])
         result.append(check)
     return result
 
@@ -409,10 +425,13 @@ def read_native_actions(repo: str, head: str, checks: list[dict[str, Any]]) -> d
     native_runs, blockers, failures = [], [], []
     observation.update(repo=repo, head_sha=head, checks=checks, native_actions=native_runs, blockers=blockers, native_collection_complete=False)
     linked = set()
+    controllers = {}
     for check in checks:
         match = re.search(r"/" + re.escape(repo) + r"/actions/runs/([1-9][0-9]*)(?:/|$)", str(check.get("link") or ""))
         if match:
             linked.add(int(match.group(1)))
+            if check.get("deferred"):
+                controllers[int(match.group(1))] = check
     observation["referenced_run_ids"] = sorted(linked)
     runs = actions_json(f"repos/{repo}/actions/runs?head_sha={head}&per_page=100", "workflow_runs")
     latest: dict[tuple[Any, Any], int] = {}
@@ -447,7 +466,19 @@ def read_native_actions(repo: str, head: str, checks: list[dict[str, Any]]) -> d
         run = actions_json(f"repos/{repo}/actions/runs/{run_id}")
         run_snapshot.update({key: run.get(key) for key in ("id", "head_sha", "run_attempt", "status", "conclusion", "updated_at", "html_url")})
         attempt = run.get("run_attempt")
-        if run.get("id") != run_id or run.get("head_sha") != head or not isinstance(attempt, int) or attempt < 1:
+        expected_head = head
+        if controller := controllers.get(run_id):
+            controller_pr = {"url": controller.get("controller_pr_url"), "headRefOid": head}
+            if (controller.get("controller_pr_head_sha") != head
+                    or run.get("event") != "pull_request_target"
+                    or run.get("path") != controller.get("controller_path")
+                    or run.get("head_sha") != controller.get("controller_head_sha")
+                    or attempt != controller.get("controller_attempt")
+                    or not (run.get("head_sha") == head or controller_matches_pr(run, controller_pr))):
+                problem("native_identity_mismatch", run)
+                continue
+            expected_head = run["head_sha"]
+        if run.get("id") != run_id or run.get("head_sha") != expected_head or not isinstance(attempt, int) or attempt < 1:
             problem("native_identity_mismatch", run)
             continue
         jobs = actions_json(f"repos/{repo}/actions/runs/{run_id}/jobs?filter=latest&per_page=100", "jobs")
@@ -455,7 +486,7 @@ def read_native_actions(repo: str, head: str, checks: list[dict[str, Any]]) -> d
         snapshots = [{key: job.get(key) for key in ("id", "name", "run_attempt", "status", "conclusion", "started_at", "completed_at", "check_run_url")} for job in jobs]
         run_snapshot["jobs"] = snapshots
         attempt_jobs = actions_json(f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100", "jobs")
-        if any(job.get("run_id") != run_id or job.get("run_attempt") != attempt or job.get("head_sha") != head for job in attempt_jobs):
+        if any(job.get("run_id") != run_id or job.get("run_attempt") != attempt or job.get("head_sha") != expected_head for job in attempt_jobs):
             problem("native_identity_mismatch", run)
         current_ids = {job.get("id") for job in attempt_jobs}
         if not current_ids or not current_ids.issubset({job.get("id") for job in jobs}):
@@ -466,20 +497,24 @@ def read_native_actions(repo: str, head: str, checks: list[dict[str, Any]]) -> d
             problem("native_state_inconsistent", run)
         elif run["conclusion"] not in {"success", "skipped", "neutral"}:
             failures.append({"name": run.get("name") or f"Actions run {run_id}", "bucket": "fail", "state": run["conclusion"], "link": run.get("html_url"), "run_id": run_id, "run_attempt": attempt})
-        names = set()
+        job_ids, check_ids = set(), set()
         for job, snapshot in zip(jobs, snapshots):
             job_attempt = job.get("run_attempt")
             check_match = re.search(r"/repos/" + re.escape(repo) + r"/check-runs/([1-9][0-9]*)$", str(job.get("check_run_url") or ""))
-            if (job.get("run_id") != run_id or job.get("head_sha") != head or not isinstance(job_attempt, int)
-                    or not 1 <= job_attempt <= attempt or not check_match or job.get("name") in names):
+            if (job.get("run_id") != run_id or job.get("head_sha") != expected_head or not isinstance(job_attempt, int)
+                    or not 1 <= job_attempt <= attempt or not check_match or job.get("id") in job_ids):
                 problem("native_identity_mismatch", run, job)
                 continue
-            names.add(job.get("name"))
+            job_ids.add(job.get("id"))
             check_id = int(check_match.group(1))
+            if check_id in check_ids:
+                problem("native_identity_mismatch", run, job, check_run_id=check_id)
+                continue
+            check_ids.add(check_id)
             snapshot["check_run_id"] = check_id
             check = actions_json(f"repos/{repo}/check-runs/{check_id}")
             snapshot.update(check_status=check.get("status"), check_conclusion=check.get("conclusion"), check_completed_at=check.get("completed_at"))
-            if check.get("id") != check_id or check.get("head_sha") != head:
+            if check.get("id") != check_id or check.get("head_sha") != expected_head:
                 problem("native_identity_mismatch", run, job, check_run_id=check_id)
             elif (check.get("status"), check.get("conclusion")) != (job.get("status"), job.get("conclusion")):
                 problem("native_state_inconsistent", run, job, check_run_id=check_id, check_status=check.get("status"), check_conclusion=check.get("conclusion"))
@@ -522,6 +557,8 @@ def required_reviewer_problems(
             reason = "in_progress"
         elif state.get("state") in {"unavailable", "deferred"}:
             reason = "unavailable"
+        elif state.get("completed_current_head"):
+            continue
         elif (state.get("reviewed_current_head")
               and state.get("latest_review_state") in {"APPROVED", "COMMENTED", "CHANGES_REQUESTED"}):
             continue
@@ -781,6 +818,10 @@ def check_fingerprint(checks: list[dict[str, Any]]) -> tuple[tuple[str, ...], ..
         "deferred",
         "status_id",
         "controller_attempt",
+        "controller_head_sha",
+        "controller_path",
+        "controller_pr_url",
+        "controller_pr_head_sha",
     )
     return tuple(
         sorted(tuple(str(check.get(key) or "") for key in keys) for check in checks)

@@ -15,6 +15,12 @@ no-findings summary. A submitted review for the exact head also completes a
 review. Timestamp-only signals must belong to the current head's check cycle;
 old approvals and unchanged comment counts do not certify a new push.
 
+When Codex publishes its `codex-review-state:v1` structured summary, require every
+registered review (including code and security) to complete for the current SHA.
+An explicit current-head summary can certify a review completed before queued CI
+started. A partial summary keeps the gate closed even if a submitted code review
+already exists; malformed or unavailable results cannot certify completion.
+
 CodeRabbit rate-limit notices (`Review limit reached`, `rate limited by
 coderabbit.ai`, or `rate limit exceeded by coderabbit.ai`) are reported as deferred,
 not as completed reviews. Other skipped/unavailable notices are unavailable.

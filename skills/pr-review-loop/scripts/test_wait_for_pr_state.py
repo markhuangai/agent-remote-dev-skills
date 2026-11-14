@@ -102,6 +102,46 @@ class NativeActionsTest(unittest.TestCase):
             result = self.collect(checks={20: {**self.job, "status": status, "conclusion": conclusion}})
             self.assertIn("native_state_inconsistent", [item["code"] for item in result["blockers"]])
 
+    def test_distinct_jobs_can_share_a_display_name(self):
+        second = {**self.job, "id": 21, "check_run_url": "https://api.github.com/repos/owner/repo/check-runs/21"}
+        result = self.collect(jobs=[self.job, second])
+        self.assertEqual([], result["blockers"])
+        self.assertEqual([20, 21], [job["id"] for job in result["runs"][0]["jobs"]])
+
+    def test_duplicate_job_or_check_identity_still_blocks(self):
+        for second in [self.job, {**self.job, "id": 21}]:
+            with self.subTest(second=second):
+                result = self.collect(jobs=[self.job, second])
+                self.assertIn("native_identity_mismatch", [item["code"] for item in result["blockers"]])
+
+    def test_trusted_deferred_controller_uses_its_associated_base_sha_for_jobs(self):
+        base = "b" * 40
+        run = {**self.run, "event": "pull_request_target", "head_sha": base,
+               "path": ".github/workflows/validation.yml", "pull_requests": [{"number": 7,
+                   "url": "https://api.github.com/repos/owner/repo/pulls/7",
+                   "head": {"sha": self.head}, "base": {"sha": base}}]}
+        check = {**self.check, "link": run["html_url"], "bucket": "pending", "state": "PENDING"}
+        status = {"context": "unit", "state": "pending", "description": "Awaiting validation.",
+                  "target_url": run["html_url"], "creator": {"login": "github-actions[bot]"}}
+        self.assertTrue(wait_for_pr_state.is_deferred_status(
+            self.pr, check, status, run, ["unit"], "validation.yml", "Awaiting validation."))
+        deferred = {**check, "deferred": True, "controller_head_sha": base,
+                    "controller_path": run["path"], "controller_pr_url": self.pr["url"],
+                    "controller_pr_head_sha": self.head, "controller_attempt": 1}
+        job = {**self.job, "head_sha": base}
+        with mock.patch.object(wait_for_pr_state, "gh", side_effect=self.api(run=run, jobs=[job])):
+            result = wait_for_pr_state.read_native_actions("owner/repo", self.head, [deferred])
+        self.assertEqual([], result["blockers"])
+        self.assertEqual([], result["failures"])
+        for changes in [{"number": 8}, {"head": {"sha": "c" * 40}},
+                        {"url": "https://api.github.com/repos/other/repo/pulls/7"}, {"base": {"sha": "c" * 40}}]:
+            invalid = {**run, "pull_requests": [{**run["pull_requests"][0], **changes}]}
+            self.assertFalse(wait_for_pr_state.is_deferred_status(
+                self.pr, check, status, invalid, ["unit"], "validation.yml", "Awaiting validation."))
+            with mock.patch.object(wait_for_pr_state, "gh", side_effect=self.api(run=invalid, jobs=[job])):
+                rejected = wait_for_pr_state.read_native_actions("owner/repo", self.head, [deferred])
+            self.assertIn("native_identity_mismatch", [item["code"] for item in rejected["blockers"]])
+
     def test_queued_new_attempt_with_only_older_checks_never_passes(self):
         run = {**self.run, "run_attempt": 2, "status": "queued", "conclusion": None}
         result = self.collect(run=run, attempt_jobs=[])

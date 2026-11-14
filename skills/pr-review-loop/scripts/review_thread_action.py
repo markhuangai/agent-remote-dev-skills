@@ -34,6 +34,7 @@ query($threadId: ID!) {
       id
       isResolved
       isOutdated
+      pullRequest { number repository { nameWithOwner } }
       comments(first: 100) {
         pageInfo { hasNextPage endCursor }
         nodes {
@@ -211,6 +212,13 @@ def disposition_kind(body: Any) -> str | None:
     return None
 
 
+def assert_thread_owner(thread: dict[str, Any], repo: str, number: int) -> None:
+    owner = thread.get("pullRequest") or {}
+    repository = (owner.get("repository") or {}).get("nameWithOwner") or ""
+    if owner.get("number") != number or repository.casefold() != repo.casefold():
+        raise ActionError("Review thread belongs to a different pull request or repository; no thread mutation was made.")
+
+
 def viewer_dispositions(thread: dict[str, Any]) -> list[dict[str, Any]]:
     comments = thread.get("comments") or []
     return [
@@ -254,6 +262,7 @@ def reply_thread(
     before_pr = read_pr(repo, pr)
     expected = assert_expected_head(before_pr, expected_head)
     before_thread = read_thread(thread_id)
+    assert_thread_owner(before_thread, repo, before_pr["number"])
     if not before_thread.get("comments"):
         raise ActionError("The review thread has no root comment.")
 
@@ -294,6 +303,7 @@ def reply_thread(
     after_pr = read_pr(repo, pr)
     after_head = assert_expected_head(after_pr, expected)
     after_thread = read_thread(thread_id)
+    assert_thread_owner(after_thread, repo, after_pr["number"])
     matches = [
         candidate
         for candidate in viewer_dispositions(after_thread)
@@ -329,6 +339,7 @@ def resolve_thread(
     before_pr = read_pr(repo, pr)
     expected = assert_expected_head(before_pr, expected_head)
     before_thread = read_thread(thread_id)
+    assert_thread_owner(before_thread, repo, before_pr["number"])
     dispositions = viewer_dispositions(before_thread)
     if not dispositions:
         raise ActionError(
@@ -352,6 +363,7 @@ def resolve_thread(
     after_pr = read_pr(repo, pr)
     after_head = assert_expected_head(after_pr, expected)
     after_thread = read_thread(thread_id)
+    assert_thread_owner(after_thread, repo, after_pr["number"])
     if not after_thread.get("isResolved") or not viewer_dispositions(after_thread):
         raise ActionError(
             "Resolve mutation completed but the thread was not verified as complete; "

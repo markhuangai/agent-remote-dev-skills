@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from reviewer_state import summarize_reviewers
@@ -96,6 +97,33 @@ class ConfiguredReviewerTest(unittest.TestCase):
         baseline = self.receipt(self.summarize(required=()), [])
         with self.assertRaisesRegex(GateError, "reviewer policy changed"):
             verify_terminal_receipt("owner/repo", {"number": 1}, baseline, required_reviewers=["quality-bot"])
+
+    def codex_summary(self, *, head=None, code="completed", security="completed", findings=False):
+        payload = {kind: {"commit_sha": head or self.head, "status": status, "has_any_findings": findings}
+                   for kind, status in [("code_review", code), ("security_review", security)]}
+        return {"author": {"login": "chatgpt-codex-connector[bot]"},
+                "body": f"<!-- codex-review-state:v1 {json.dumps(payload)} -->",
+                "updatedAt": "2026-11-14T09:55:00Z"}
+
+    def test_head_specific_review_before_ci_start_is_accepted(self):
+        summary = self.summarize(required=("codex",), comments=[self.codex_summary()])
+        self.assertTrue(self.receipt(summary, ["codex"])["required_reviewers_satisfied"])
+
+    def test_partial_structured_review_keeps_gate_closed_after_code_review(self):
+        review = self.review()
+        review["author"]["login"] = "chatgpt-codex-connector[bot]"
+        summary = self.summarize(required=("codex",), reviews=[review],
+                                 comments=[self.codex_summary(security="running", findings=True)])
+        self.assertTrue(summary["codex"]["in_progress"])
+        self.assertFalse(self.receipt(summary, ["codex"])["required_reviewers_satisfied"])
+
+    def test_stale_failed_or_malformed_structured_review_is_not_a_pass(self):
+        malformed = self.codex_summary()
+        malformed["body"] = '<!-- codex-review-state:v1 {bad json} -->'
+        for comment in [self.codex_summary(head="b" * 40), self.codex_summary(security="failed"), malformed]:
+            with self.subTest(comment=comment):
+                summary = self.summarize(required=("codex",), comments=[comment])
+                self.assertFalse(self.receipt(summary, ["codex"])["required_reviewers_satisfied"])
 
 
 if __name__ == "__main__":

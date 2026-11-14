@@ -21,6 +21,7 @@ class ReviewThreadActionTest(unittest.TestCase):
 
     def pr(self, head: str | None = None) -> dict[str, object]:
         return {
+            "number": 7,
             "state": "OPEN",
             "isDraft": False,
             "headRefOid": head or self.head,
@@ -62,6 +63,7 @@ class ReviewThreadActionTest(unittest.TestCase):
             "id": "thread",
             "isResolved": resolved,
             "isOutdated": False,
+            "pullRequest": {"number": 7, "repository": {"nameWithOwner": "owner/repo"}},
             "comments": comments,
         }
 
@@ -79,6 +81,23 @@ class ReviewThreadActionTest(unittest.TestCase):
                 "commit": {"oid": self.head},
             },
         }
+
+    def test_mutations_reject_a_thread_owned_by_another_pr_or_repository(self):
+        for owner in [{"number": 8, "repository": {"nameWithOwner": "owner/repo"}},
+                      {"number": 7, "repository": {"nameWithOwner": "other/repo"}}, {}]:
+            for action in ["reply", "resolve"]:
+                with self.subTest(owner=owner, action=action):
+                    thread = self.thread(reply="False positive: evidence")
+                    thread["pullRequest"] = owner
+                    with mock.patch.object(review_thread_action, "read_pr", return_value=self.pr()), \
+                         mock.patch.object(review_thread_action, "read_thread", return_value=thread), \
+                         mock.patch.object(review_thread_action, "graphql") as graphql:
+                        with self.assertRaisesRegex(review_thread_action.ActionError, "different pull request"):
+                            if action == "reply":
+                                review_thread_action.reply_thread("owner/repo", "7", self.head, "thread", "False positive: evidence")
+                            else:
+                                review_thread_action.resolve_thread("owner/repo", "7", self.head, "thread")
+                        graphql.assert_not_called()
 
     def test_reply_uses_only_thread_reply_mutation(self):
         body = "False positive: current code proves the claim is unreachable"

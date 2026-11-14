@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -117,6 +119,31 @@ def _latest_event(
     if valid:
         return max(valid, key=lambda event: event[0] or datetime.min.replace(tzinfo=timezone.utc))
     return prepared[-1]
+
+
+def codex_head_summary(comments: list[dict[str, Any]], current_head: str) -> dict[str, Any] | None:
+    event = _latest_event(
+        (node_timestamp(node, "updatedAt", "createdAt", "updated_at", "created_at"), "head_summary", node)
+        for node in comments if "<!-- codex-review-state:v1 " in str(node.get("body") or "")
+    )
+    if event is None:
+        return None
+    match = re.search(r"<!-- codex-review-state:v1\s+(\{.*?\})\s*-->", str(event[3].get("body") or ""), re.DOTALL)
+    try:
+        payload = json.loads(match.group(1)) if match else None
+    except json.JSONDecodeError:
+        payload = None
+    if not isinstance(payload, dict) or not payload or any(not isinstance(value, dict) for value in payload.values()):
+        return {"state": "unavailable", "in_progress": False, "completed_current_head": False}
+    entries = list(payload.values())
+    current = all(entry.get("commit_sha") == current_head for entry in entries)
+    active = not current or any(entry.get("status") in {"running", "queued", "pending", "in_progress"} for entry in entries)
+    complete = current and all(entry.get("status") == "completed" for entry in entries)
+    state = "in_progress" if active else "unavailable"
+    if complete:
+        state = "approved" if all(entry.get("has_any_findings") is False for entry in entries) else "reviewed"
+    return {"state": state, "in_progress": active, "completed_current_head": complete,
+            "head_summary": payload, "head_summary_at": event[1]}
 
 
 def summarize_reviewers(
@@ -257,6 +284,10 @@ def summarize_reviewers(
             "conversation_comment_count": len(reviewer_comments),
             "inline_comment_count": len(reviewer_inline),
         }
+        if reviewer == "codex" and (head_summary := codex_head_summary(reviewer_comments, current_head)) is not None:
+            summary_time = parse_timestamp(head_summary.get("head_summary_at"))
+            if eyes is None or eyes[0] is None or summary_time is None or eyes[0] <= summary_time:
+                summary[reviewer].update(head_summary)
 
     return summary
 
