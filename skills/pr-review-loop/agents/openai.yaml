@@ -1,0 +1,4 @@
+interface:
+  display_name: "PR Review Loop"
+  short_description: "Resolve PR blockers and verify configured gates"
+  default_prompt: "Use $pr-review-loop to validate findings, fix in-scope blockers, and wait for passing current-head CI and the repository's configured automated reviews."

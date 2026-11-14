@@ -1,0 +1,6 @@
+interface:
+  display_name: "Plan Audit"
+  short_description: "Independently audit implementation conformance"
+  default_prompt: "Use $plan-audit to independently compare the implementation with the supplied plan and exact base commit, reporting evidence-backed conformance findings."
+policy:
+  allow_implicit_invocation: false
