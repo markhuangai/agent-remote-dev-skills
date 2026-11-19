@@ -37,6 +37,26 @@ class ValidateSkillsTest(unittest.TestCase):
         self.entry.write_text("---\nname: other\ndescription: Sample capability\n---\n", encoding="utf-8")
         self.assertIn("name differs from directory", "\n".join(validate(self.root)))
 
+    def test_default_prompt_matches_complete_skill_name(self):
+        planner = self.root / "skills" / "sdlc-plan"
+        interface = planner / "agents" / "openai.yaml"
+        interface.parent.mkdir(parents=True)
+        (planner / "SKILL.md").write_text(
+            "---\nname: sdlc-plan\ndescription: Draft implementation plans.\n---\n",
+            encoding="utf-8",
+        )
+        for skill, errors in (
+            ("sdlc-plan-implementation", [f"{interface}: default prompt must name the skill"]),
+            ("sdlc-plan", []),
+        ):
+            with self.subTest(skill=skill):
+                interface.write_text(
+                    'interface:\n  short_description: "Draft a reviewed implementation plan"\n'
+                    f'  default_prompt: "Use ${skill}."\n',
+                    encoding="utf-8",
+                )
+                self.assertEqual(errors, validate(self.root))
+
 
 if __name__ == "__main__":
     unittest.main()

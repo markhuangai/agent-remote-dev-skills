@@ -1,7 +1,7 @@
 # Agent Remote Dev Skills
 
-Installable skills for taking a refined implementation plan through a tested,
-reviewed GitHub pull request in your coding CLI.
+Installable skills for creating a specialist-reviewed implementation plan and
+delivering an agreed plan through a tested GitHub pull request in your coding CLI.
 
 Supply the plan once. The agent validates it against the repository, implements
 it, obtains an independent conformance audit, runs the required checks, opens a
@@ -30,10 +30,11 @@ List the catalog without installing, or install a standalone module:
 
 ```bash
 npx skills add markhuangai/agent-remote-dev-skills --list
+npx skills add markhuangai/agent-remote-dev-skills --skill sdlc-plan -a codex -y
 npx skills add markhuangai/agent-remote-dev-skills --skill pr-review-loop -a codex -y
 ```
 
-Installation uses standard `SKILL.md` packages. See the installer's
+Installation uses `SKILL.md` packages. See the installer's
 [supported agents](https://github.com/vercel-labs/skills/blob/main/docs/agents.md)
 for other CLIs. Host permissions, skill invocation syntax, and independent-agent
 capabilities vary. A supported install target does not guarantee every workflow
@@ -44,16 +45,41 @@ review your local versions before installing.
 
 | Skill | Purpose | Dependencies |
 | --- | --- | --- |
+| [sdlc-plan](skills/sdlc-plan/SKILL.md) | Create or refine a plan with task-specific specialists and grill the draft. | Separate agent sessions for a final plan. |
 | [sdlc-plan-implementation](skills/sdlc-plan-implementation/SKILL.md) | Execute a supplied plan through PR delivery and verified automated gates. | Both modules below; independent auditor capability. |
 | [plan-audit](skills/plan-audit/SKILL.md) | Read-only, independent implementation-to-plan conformance audit. | Host-supported separate agent or independent CLI session. |
 | [pr-review-loop](skills/pr-review-loop/SKILL.md) | Validate findings, fix blockers, and monitor current-head checks and reviews. | Git, GitHub CLI, Python 3.12+. |
 
-The execution workflow requires **all three modules**. The installer does not
-automatically resolve skill dependencies; use the complete-workflow command above.
-Each module includes its own references and executable resources. Codex UI metadata
-is optional for other hosts, and no model or review vendor is mandatory.
+The execution workflow requires `sdlc-plan-implementation`, `plan-audit`, and
+`pr-review-loop`. The installer does not automatically resolve skill dependencies.
+Use the complete-workflow command to install them together. `sdlc-plan` can be
+installed independently.
 
 ## Use
+
+### Plan a change
+
+Invoke `sdlc-plan` explicitly in the target project. Either a plain request or a
+linked issue can start the workflow. For example, in Codex:
+
+```text
+$sdlc-plan Plan a dry-run mode for the import command.
+$sdlc-plan Plan the change described in https://github.com/OWNER/REPO/issues/123.
+```
+
+Use `/sdlc-plan` in Claude Code or `@sdlc-plan` in OpenCode v2. If the host
+lacks an invocation control for skills, explicitly ask it to use `sdlc-plan`.
+The lead planner asks the user about unresolved decisions, then gets every
+participating specialist's agreement on the same revision. When a needed review
+is unavailable, it presents a provisional draft. The plan appears in chat by
+default. To start delivery, identify the final plan in a separate request to
+`sdlc-plan-implementation`.
+
+Claude Code and OpenCode v2 use the host-specific `disable-model-invocation`
+field. The `skill-creator` quick validator rejects that field. This repository
+validates the CLI package with its own validator and installation smoke test.
+
+### Deliver an agreed plan
 
 Start your coding CLI in the target repository with Git, authenticated GitHub CLI
 access, Python 3.12+, the project's test tools, and permission to publish a branch
@@ -141,9 +167,10 @@ python3 -m venv .venv
 ```
 
 The smoke check pins `skills@1.8.1` and installs into temporary project
-directories for Codex, Claude Code, and OpenCode. It verifies the actual packaged
-resources and never requests a global installation. The `validate-skills` CI job
-runs the same checks. Review instruction changes against realistic ready-plan,
-blocked-plan, dependency, and stale-review scenarios before submitting a PR.
+directories for Codex, Claude Code, and OpenCode. It verifies the packaged
+resources in both the full catalog and planner-only installs. The
+`validate-skills` CI job runs the same checks. Review instruction changes against
+realistic planning, delivery, dependency, and stale-review scenarios before
+submitting a PR.
 
 Licensed under [Apache-2.0](LICENSE).
