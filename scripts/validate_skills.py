@@ -76,7 +76,8 @@ def validate(root: Path) -> list[str]:
                 short = interface["short_description"]
                 if not isinstance(short, str) or not 25 <= len(short) <= 64:
                     errors.append(f"{interface_file}: short description must contain 25–64 characters")
-                if not isinstance(interface.get("default_prompt"), str) or f"${name}" not in interface["default_prompt"]:
+                default_prompt = interface.get("default_prompt")
+                if not isinstance(default_prompt, str) or name not in re.findall(r"\$([\w-]+)", default_prompt):
                     errors.append(f"{interface_file}: default prompt must name the skill")
             except (yaml.YAMLError, KeyError, TypeError) as error:
                 errors.append(f"{interface_file}: invalid interface metadata: {error}")

@@ -1,0 +1,6 @@
+interface:
+  display_name: "SDLC Plan"
+  short_description: "Draft and grill plans with specialist agents"
+  default_prompt: "Use $sdlc-plan to turn this request into a reviewed implementation plan."
+policy:
+  allow_implicit_invocation: false
